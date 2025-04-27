@@ -1,0 +1,9 @@
+#ignore all pycache files
+__pycache__/
+
+#ignore all pyc files
+*.pyc
+
+models_local/
+
+data/
