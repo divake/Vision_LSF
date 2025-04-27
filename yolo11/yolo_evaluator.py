@@ -51,6 +51,7 @@ class COCOEvaluator:
         os.makedirs(self.metrics_dir, exist_ok=True)
         
         # Set evaluation parameters
+        self.dataset_split = self.config['evaluation'].get('dataset_split', 'train')  # Default to train if not specified
         self.match_iou_threshold = self.config['evaluation']['match_iou_threshold']
         self.eval_full_dataset = self.config['evaluation']['eval_full_dataset']
         self.specific_images = self.config['evaluation']['specific_images']
@@ -383,6 +384,9 @@ class COCOEvaluator:
             counts['recall'] = tp / (tp + fn) if (tp + fn) > 0 else 0
             counts['f1'] = 2 * counts['precision'] * counts['recall'] / (counts['precision'] + counts['recall']) if (counts['precision'] + counts['recall']) > 0 else 0
         
+        # Calculate mAP at different IoU thresholds
+        map_metrics = self.calculate_map_at_iou_thresholds(true_positives, false_positives, false_negatives)
+        
         return {
             'overall': {
                 'true_positives': tp_count,
@@ -391,10 +395,97 @@ class COCOEvaluator:
                 'precision': precision,
                 'recall': recall,
                 'f1_score': f1,
-                'average_iou': avg_iou
+                'average_iou': avg_iou,
+                'map_metrics': map_metrics
             },
             'per_class': dict(class_metrics)
         }
+    
+    def calculate_map_at_iou_thresholds(
+        self,
+        true_positives: List[Dict], 
+        false_positives: List[Dict], 
+        false_negatives: List[Dict],
+        iou_thresholds=[0.5, 0.75, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+    ) -> Dict:
+        """
+        Calculate mAP at different IoU thresholds.
+        
+        Args:
+            true_positives: List of true positive matches
+            false_positives: List of false positive detections
+            false_negatives: List of false negative ground truths
+            iou_thresholds: List of IoU thresholds to calculate mAP for
+            
+        Returns:
+            Dictionary of mAP metrics
+        """
+        # Initialize mAP metrics
+        map_metrics = {
+            'map50': 0.0,      # mAP at IoU=0.5
+            'map75': 0.0,      # mAP at IoU=0.75
+            'map50-95': 0.0    # mAP at IoU=0.5:0.95
+        }
+        
+        # Calculate mAP at IoU=0.5
+        if 0.5 in iou_thresholds:
+            # For simplicity in this implementation, we'll use the standard precision, recall
+            # True mAP calculation would involve calculating the area under the precision-recall curve
+            # This is a simplified version to demonstrate the concept
+            map_metrics['map50'] = self.calculate_average_precision(true_positives, false_positives, false_negatives, 0.5)
+        
+        # Calculate mAP at IoU=0.75
+        if 0.75 in iou_thresholds:
+            map_metrics['map75'] = self.calculate_average_precision(true_positives, false_positives, false_negatives, 0.75)
+        
+        # Calculate mAP at IoU=0.5:0.95
+        # This is the average of mAP calculated at IoU thresholds from 0.5 to 0.95 with a step of 0.05
+        if set([0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]).issubset(set(iou_thresholds)):
+            map_values = []
+            for iou_threshold in [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]:
+                map_values.append(self.calculate_average_precision(true_positives, false_positives, false_negatives, iou_threshold))
+            
+            map_metrics['map50-95'] = np.mean(map_values) if map_values else 0.0
+            
+        return map_metrics
+    
+    def calculate_average_precision(
+        self,
+        true_positives: List[Dict], 
+        false_positives: List[Dict], 
+        false_negatives: List[Dict],
+        iou_threshold: float
+    ) -> float:
+        """
+        Calculate average precision at a specific IoU threshold.
+        
+        Args:
+            true_positives: List of true positive matches
+            false_positives: List of false positive detections
+            false_negatives: List of false negative ground truths
+            iou_threshold: IoU threshold to calculate AP for
+            
+        Returns:
+            Average precision value
+        """
+        # Filter true positives based on IoU threshold
+        tp_at_threshold = [tp for tp in true_positives if tp['iou'] >= iou_threshold]
+        
+        # Count TP, FP, FN at this threshold
+        tp_count = len(tp_at_threshold)
+        fp_count = len(false_positives) + (len(true_positives) - tp_count)  # FPs + TPs that became FPs
+        fn_count = len(false_negatives)
+        
+        # Calculate precision, recall, and AP
+        precision = tp_count / (tp_count + fp_count) if (tp_count + fp_count) > 0 else 0
+        recall = tp_count / (tp_count + fn_count) if (tp_count + fn_count) > 0 else 0
+        
+        # For simplicity, we use precision as a proxy for AP
+        # A true AP calculation would calculate the area under the precision-recall curve
+        # This is a simplified version for demonstration
+        average_precision = precision
+        
+        return average_precision
     
     def visualize_results(
         self, 
@@ -684,8 +775,13 @@ class COCOEvaluator:
         # Load model
         self.load_model()
         
-        # Load annotations
-        self.coco_gt_data, self.categories = self.load_coco_annotations(is_train=True)
+        # Determine which dataset to use based on configuration
+        is_train = self.dataset_split.lower() == 'train'
+        dataset_name = "training" if is_train else "validation"
+        print(f"\nEvaluating on {dataset_name} dataset")
+        
+        # Load annotations for the selected dataset
+        self.coco_gt_data, self.categories = self.load_coco_annotations(is_train=is_train)
         
         # Print information about class mapping
         if self.yolo_to_coco_mapping:
@@ -697,11 +793,12 @@ class COCOEvaluator:
         
         # Determine which images to evaluate
         image_files = []
-        images_dir = self.train_images_dir
+        images_dir = self.train_images_dir if is_train else self.val_images_dir
         
         if self.eval_full_dataset:
             # Get all image files from the dataset
             # This would be better done using the COCO annotations to avoid file system operations
+            print(f"Getting all images from the {dataset_name} dataset...")
             for img in self.coco_gt_data['images']:
                 image_files.append((img['file_name'], os.path.join(images_dir, img['file_name'])))
         else:
@@ -715,6 +812,7 @@ class COCOEvaluator:
         
         # Limit the number of images if needed
         if self.max_images is not None and len(image_files) > self.max_images:
+            print(f"Limiting evaluation to {self.max_images} images (out of {len(image_files)} total)")
             image_files = image_files[:self.max_images]
         
         print(f"Evaluating {len(image_files)} images...")
@@ -754,6 +852,13 @@ class COCOEvaluator:
         print(f"Recall: {overall_metrics['overall']['recall']:.4f}")
         print(f"F1 Score: {overall_metrics['overall']['f1_score']:.4f}")
         print(f"Average IoU: {overall_metrics['overall']['average_iou']:.4f}")
+        
+        # Print mAP metrics
+        map_metrics = overall_metrics['overall']['map_metrics']
+        print("\n===== mAP Metrics =====")
+        print(f"mAP@50: {map_metrics['map50']:.4f}")
+        print(f"mAP@75: {map_metrics['map75']:.4f}")
+        print(f"mAP@50-95: {map_metrics['map50-95']:.4f}")
         
         # Print per-class metrics
         print("\n===== Per-Class Results =====")

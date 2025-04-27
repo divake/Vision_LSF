@@ -21,18 +21,21 @@ model:
 
 # Evaluation parameters
 evaluation:
+  # Dataset split to use ('train' or 'val')
+  dataset_split: "val"
+  
   # IoU threshold for matching predictions with ground truth
   match_iou_threshold: 0.5
   
-  # Set to true to evaluate on all validation images, false for specific images
-  eval_full_dataset: false
+  # Set to true to evaluate on all images, false for specific images
+  eval_full_dataset: true
+  
+  # Maximum number of images to evaluate (null for all, or specify a number for limit)
+  max_images: null
   
   # Specific image filenames to evaluate (if eval_full_dataset is false)
   specific_images: 
     - "COCO_train2014_000000000064.jpg"
-  
-  # Maximum number of images to evaluate (null for all)
-  max_images: null
   
   # Class mapping file (if needed to map between different class schemes)
   class_mapping_file: null
