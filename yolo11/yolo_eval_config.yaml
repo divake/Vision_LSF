@@ -1,0 +1,91 @@
+# YOLO Evaluation Configuration
+
+# Paths
+paths:
+  # COCO dataset paths
+  coco_dataset:
+    train_images: "/ssd_4TB/divake/Vision_LSF/data/COCO/train2014"
+    val_images: "/ssd_4TB/divake/Vision_LSF/data/COCO/val2014"
+    train_annotations: "/ssd_4TB/divake/Vision_LSF/data/COCO/annotations/instances_train2014.json"
+    val_annotations: "/ssd_4TB/divake/Vision_LSF/data/COCO/annotations/instances_val2014.json"
+  
+  # Output directory for evaluation results
+  output_dir: "/ssd_4TB/divake/Vision_LSF/yolo11/yolo11_eval_results"
+
+# Model configuration
+model:
+  name: "yolo11n.pt"  # Model to evaluate
+  device: "cuda"      # Use "cuda" or "cpu"
+  conf_threshold: 0.25  # Confidence threshold for predictions
+  iou_threshold: 0.45   # IoU threshold for NMS
+
+# Evaluation parameters
+evaluation:
+  # IoU threshold for matching predictions with ground truth
+  match_iou_threshold: 0.5
+  
+  # Set to true to evaluate on all validation images, false for specific images
+  eval_full_dataset: false
+  
+  # Specific image filenames to evaluate (if eval_full_dataset is false)
+  specific_images: 
+    - "COCO_train2014_000000000064.jpg"
+  
+  # Maximum number of images to evaluate (null for all)
+  max_images: null
+  
+  # Class mapping file (if needed to map between different class schemes)
+  class_mapping_file: null
+
+# Visualization settings
+visualization:
+  # Whether to create visualizations
+  enabled: true
+  
+  # Save visualizations to disk
+  save: true
+  
+  # Show visualizations interactively (set to false for headless environments)
+  show: true
+  
+  # Whether to draw ground truth boxes
+  draw_ground_truth: true
+  
+  # Whether to draw predicted boxes
+  draw_predictions: true
+  
+  # Maximum number of images to visualize
+  max_vis_images: 10
+  
+  # Colors for different types of boxes
+  colors:
+    ground_truth: [0, 255, 0]    # Green
+    true_positive: [0, 0, 255]   # Blue
+    false_positive: [255, 0, 0]  # Red
+    false_negative: [255, 255, 0]  # Yellow
+  
+  # Font settings
+  font:
+    scale: 0.5
+    thickness: 1
+    color: [255, 255, 255]  # White
+  
+  # Line thickness for bounding boxes
+  box_thickness: 2
+
+# Metrics to calculate
+metrics:
+  # Calculate overall metrics
+  overall: true
+  
+  # Calculate per-class metrics
+  per_class: true
+  
+  # Calculate precision-recall curve
+  pr_curve: true
+  
+  # AP calculation
+  ap_iou_thresholds: [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+  
+  # Save metrics as CSV
+  save_csv: true 

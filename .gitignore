@@ -7,3 +7,8 @@ __pycache__/
 models_local/
 
 data/
+
+*.pt
+*.pth
+
+yolo11_eval_results/
