@@ -12,3 +12,5 @@ data/
 *.pth
 
 yolo11_eval_results/
+src/
+yolo11_cache/

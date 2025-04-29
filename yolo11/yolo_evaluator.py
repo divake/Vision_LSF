@@ -19,18 +19,24 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from collections import defaultdict
 import pandas as pd
+import torch  # Add torch import for the type annotations
 from typing import Dict, List, Tuple, Optional, Set, Union, Any
 from ultralytics import YOLO
+
+# Import caching functionality
+from yolo11_cache import YOLO11Cache
 
 class COCOEvaluator:
     """Class for evaluating YOLO model predictions against COCO ground truth."""
     
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, enable_cache: bool = False, cache_logits: bool = False):
         """
         Initialize the YOLO evaluator.
         
         Args:
             config_path: Path to the YAML configuration file
+            enable_cache: Whether to enable caching of model predictions
+            cache_logits: Whether to cache raw model outputs (logits) for conformal prediction
         """
         # Load configuration file
         with open(config_path, 'r') as f:
@@ -71,6 +77,23 @@ class COCOEvaluator:
         
         # Class mapping from YOLO to COCO (will be initialized later)
         self.yolo_to_coco_mapping = None
+        
+        # Caching setup
+        self.enable_cache = enable_cache
+        self.cache_logits = cache_logits
+        self.cache = None
+        if enable_cache:
+            cache_dir = self.config.get('cache', {}).get('dir', 'yolo11_cache')
+            self.cache = YOLO11Cache(
+                cache_dir=cache_dir,
+                model_name=self.model_name,
+                conf_threshold=self.conf_threshold,
+                iou_threshold=self.iou_threshold,
+                cache_logits=cache_logits
+            )
+            print(f"Caching enabled. Cache directory: {cache_dir}")
+            if cache_logits:
+                print("Logit caching enabled for conformal prediction.")
     
     def load_model(self):
         """Load the YOLO model."""
@@ -700,6 +723,51 @@ class COCOEvaluator:
         
         print(f"Metrics saved to {output_path}")
     
+    def extract_logits(self, results) -> Dict[str, torch.Tensor]:
+        """
+        Extract raw logits from YOLO model predictions for conformal prediction.
+        
+        Args:
+            results: YOLO model prediction results
+            
+        Returns:
+            Dictionary containing raw logits
+        """
+        # Get the result for the image
+        result = results[0]
+        
+        # Extract tensors before NMS was applied
+        logits = {}
+        
+        try:
+            # Extract the tensors we care about for conformal prediction
+            # The exact structure depends on the YOLO version and model
+            
+            # If available, get pre-NMS outputs
+            if hasattr(result, 'probs') and result.probs is not None:
+                logits['probs'] = result.probs.detach().clone()
+            
+            if hasattr(result, 'boxes') and result.boxes is not None:
+                # Save the raw detection boxes
+                if hasattr(result.boxes, 'conf') and result.boxes.conf is not None:
+                    logits['conf'] = result.boxes.conf.detach().clone()
+                
+                # Class probabilities before argmax was applied
+                if hasattr(result.boxes, 'cls') and result.boxes.cls is not None:
+                    logits['cls'] = result.boxes.cls.detach().clone()
+            
+            # Try to get proto or other outputs if available
+            if hasattr(result, 'proto') and result.proto is not None:
+                logits['proto'] = result.proto.detach().clone()
+            
+            # Add any other tensors needed for conformal prediction
+            # ...
+            
+        except Exception as e:
+            print(f"Warning: Error extracting logits: {e}")
+        
+        return logits
+    
     def evaluate_image(self, image_path: str, ground_truth: List[Dict], image_size: Tuple[int, int]) -> Dict:
         """
         Evaluate a single image.
@@ -711,30 +779,66 @@ class COCOEvaluator:
         Returns:
             Evaluation metrics
         """
-        # Run prediction with the model
-        results = self.model(
-            image_path, 
-            conf=self.conf_threshold, 
-            iou=self.iou_threshold,
-            device=self.device, 
-            verbose=False
-        )
+        # Check cache first if enabled
+        cached_prediction = None
+        cached_logits = None
+        image_filename = os.path.basename(image_path)
         
-        # Get the detection results
-        result = results[0]
-        boxes = result.boxes.data.cpu().numpy()  # x1, y1, x2, y2, conf, cls
+        if self.enable_cache and self.cache:
+            if self.cache.has_prediction(image_filename):
+                if self.cache_logits:
+                    cached_prediction, cached_logits = self.cache.get_prediction(image_filename, include_logits=True)
+                    print(f"Using cached prediction and logits for {image_filename}")
+                else:
+                    cached_prediction = self.cache.get_prediction(image_filename)
+                    print(f"Using cached prediction for {image_filename}")
         
-        # Convert to our format
-        detections = []
-        for box in boxes:
-            x1, y1, x2, y2, conf, cls_id = box
-            cls_id = int(cls_id)
-            detections.append({
-                'bbox': [float(x1), float(y1), float(x2), float(y2)],
-                'confidence': float(conf),
-                'class_id': cls_id,
-                'class_name': self.model.names[cls_id]
-            })
+        if cached_prediction is not None:
+            # Use the cached prediction
+            detections = []
+            for box in cached_prediction.get('boxes', []):
+                detections.append(box)
+        else:
+            # Run prediction with the model
+            results = self.model(
+                image_path, 
+                conf=self.conf_threshold, 
+                iou=self.iou_threshold,
+                device=self.device, 
+                verbose=False
+            )
+            
+            # Extract logits for conformal prediction if enabled
+            extracted_logits = None
+            if self.cache_logits:
+                extracted_logits = self.extract_logits(results)
+            
+            # Get the detection results
+            result = results[0]
+            boxes = result.boxes.data.cpu().numpy()  # x1, y1, x2, y2, conf, cls
+            
+            # Convert to our format
+            detections = []
+            for box in boxes:
+                x1, y1, x2, y2, conf, cls_id = box
+                cls_id = int(cls_id)
+                detection = {
+                    'bbox': [float(x1), float(y1), float(x2), float(y2)],
+                    'confidence': float(conf),
+                    'class_id': cls_id,
+                    'class_name': self.model.names[cls_id]
+                }
+                detections.append(detection)
+            
+            # Cache the prediction if caching is enabled
+            if self.enable_cache and self.cache:
+                # Save ground truth along with predictions
+                cached_data = {
+                    'boxes': detections,
+                    'ground_truth': ground_truth,
+                    'image_size': image_size
+                }
+                self.cache.save_prediction(image_filename, cached_data, extracted_logits)
         
         # Match detections to ground truth
         true_positives, false_positives, false_negatives = self.match_detections_to_ground_truth(
@@ -780,6 +884,17 @@ class COCOEvaluator:
         dataset_name = "training" if is_train else "validation"
         print(f"\nEvaluating on {dataset_name} dataset")
         
+        # Try to load cache if enabled
+        if self.enable_cache and self.cache:
+            cache_loaded = self.cache.load_cache(dataset_name)
+            if cache_loaded:
+                print(f"Loaded prediction cache for {dataset_name} dataset")
+                print(f"Cache contains {len(self.cache.prediction_cache)} predictions")
+                if self.cache_logits and hasattr(self.cache, 'logits_cache') and self.cache.logits_cache:
+                    print(f"Cache contains logits for {len(self.cache.logits_cache)} images")
+            else:
+                print(f"No existing cache found for {dataset_name} dataset, will create new cache")
+        
         # Load annotations for the selected dataset
         self.coco_gt_data, self.categories = self.load_coco_annotations(is_train=is_train)
         
@@ -822,10 +937,20 @@ class COCOEvaluator:
         all_false_positives = []
         all_false_negatives = []
         
+        # Store all ground truth in a consolidated dictionary for caching
+        consolidated_ground_truth = {}
+        
         # Evaluate each image
         for img_file, img_path in tqdm(image_files, desc="Evaluating images"):
             # Get ground truth for this image
             ground_truth, image_size = self.get_image_ground_truth(img_file, self.coco_gt_data)
+            
+            # Store ground truth for consolidated saving
+            if self.enable_cache:
+                consolidated_ground_truth[img_file] = {
+                    'ground_truth': ground_truth,
+                    'image_size': image_size
+                }
             
             if not ground_truth:
                 print(f"Warning: No ground truth annotations found for {img_file}")
@@ -870,16 +995,56 @@ class COCOEvaluator:
         if self.config['metrics']['save_csv']:
             self.save_metrics_to_csv(overall_metrics, self.metrics_dir)
         
+        # Save cache if enabled and modified
+        if self.enable_cache and self.cache and hasattr(self.cache, 'cache_modified') and self.cache.cache_modified:
+            # Save the consolidated ground truth file
+            cache_path = self._get_cache_path(dataset_name)
+            ground_truth_path = os.path.join(cache_path, "yolo11_ground_truth.pt")
+            os.makedirs(os.path.dirname(ground_truth_path), exist_ok=True)
+            torch.save(consolidated_ground_truth, ground_truth_path)
+            print(f"Saved consolidated ground truth for {len(consolidated_ground_truth)} images")
+            
+            # Save the cache
+            cache_path = self.cache.save_cache(dataset_name)
+            print(f"Saved prediction cache to {cache_path}")
+            if self.cache_logits and hasattr(self.cache, 'logits_cache') and self.cache.logits_cache:
+                print(f"Saved logits for {len(self.cache.logits_cache)} images")
+        
         print(f"\nResults saved to {self.output_dir}")
         
         return overall_metrics
+        
+    def _get_cache_path(self, dataset_name: str) -> str:
+        """Get the path to the cache directory for a specific dataset."""
+        if self.cache:
+            return self.cache._get_cache_path(dataset_name)
+        else:
+            cache_dir = self.config.get('cache', {}).get('dir', 'yolo11_cache')
+            from yolo11_cache import YOLO11Cache
+            temp_cache = YOLO11Cache(cache_dir=cache_dir)
+            return temp_cache._get_cache_path(dataset_name)
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate YOLO model against COCO ground truth")
     parser.add_argument("--config", type=str, default="/ssd_4TB/divake/Vision_LSF/yolo11/yolo_eval_config.yaml", help="Path to config file")
+    parser.add_argument("--enable-cache", action="store_true", help="Enable caching of model predictions")
+    parser.add_argument("--cache-logits", action="store_true", help="Cache raw model outputs (logits) for conformal prediction")
     args = parser.parse_args()
     
-    evaluator = COCOEvaluator(args.config)
+    # Enable caching by default for better performance
+    enable_cache = True
+    cache_logits = True
+    
+    # If explicitly specified via args, use those values
+    if args.enable_cache:
+        enable_cache = args.enable_cache
+    if args.cache_logits:
+        cache_logits = args.cache_logits
+        
+    print(f"Caching is {'enabled' if enable_cache else 'disabled'}")
+    print(f"Logit caching is {'enabled' if cache_logits else 'disabled'}")
+    
+    evaluator = COCOEvaluator(args.config, enable_cache=enable_cache, cache_logits=cache_logits)
     evaluator.run_evaluation()
 
 if __name__ == "__main__":

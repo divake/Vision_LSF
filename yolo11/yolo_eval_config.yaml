@@ -19,6 +19,12 @@ model:
   conf_threshold: 0.25  # Confidence threshold for predictions
   iou_threshold: 0.45   # IoU threshold for NMS
 
+# Cache configuration
+cache:
+  dir: 'yolo11_cache'   # Directory to store cache files
+  cache_logits: true    # Whether to cache raw model outputs (logits) for conformal prediction
+  logits_to_extract: ['probs', 'conf', 'cls']  # Types of logits to extract and cache
+
 # Evaluation parameters
 evaluation:
   # Dataset split to use ('train' or 'val')
@@ -31,11 +37,15 @@ evaluation:
   eval_full_dataset: true
   
   # Maximum number of images to evaluate (null for all, or specify a number for limit)
-  max_images: null
+  max_images: 100
   
   # Specific image filenames to evaluate (if eval_full_dataset is false)
-  specific_images: 
-    - "COCO_train2014_000000000064.jpg"
+  specific_images:
+    - "000000000139.jpg"
+    - "000000000285.jpg"
+    - "000000000632.jpg"
+    - "000000000724.jpg"
+    - "000000000776.jpg"
   
   # Class mapping file (if needed to map between different class schemes)
   class_mapping_file: null
@@ -43,13 +53,13 @@ evaluation:
 # Visualization settings
 visualization:
   # Whether to create visualizations
-  enabled: true
+  enabled: false
   
   # Save visualizations to disk
-  save: true
+  save: false
   
   # Show visualizations interactively (set to false for headless environments)
-  show: true
+  show: false
   
   # Whether to draw ground truth boxes
   draw_ground_truth: true
@@ -63,9 +73,9 @@ visualization:
   # Colors for different types of boxes
   colors:
     ground_truth: [0, 255, 0]    # Green
-    true_positive: [0, 0, 255]   # Blue
-    false_positive: [255, 0, 0]  # Red
-    false_negative: [255, 255, 0]  # Yellow
+    true_positive: [0, 255, 255]  # Cyan
+    false_positive: [0, 0, 255]   # Red
+    false_negative: [255, 0, 255]  # Magenta
   
   # Font settings
   font:

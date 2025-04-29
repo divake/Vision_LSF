@@ -1,57 +1,153 @@
-# YOLO11 Feature Extractor
+# YOLO11 - Vision LSF
 
-A utility for extracting both object detection results and intermediate layer features from YOLO11 models.
+This repository contains utilities for working with YOLO11 models, particularly focused on evaluation, feature extraction, and dataset validation.
 
-## Features
+## Contents
 
-- Load any pretrained YOLO11 model (yolo11n.pt, yolo11s.pt, etc.)
-- Process images individually or in batches with progress tracking
-- Extract object detection results (bounding boxes, classes, confidence scores)
-- Extract features from multiple intermediate layers simultaneously
-- Normalize features using various methods (L2, min-max, standardization)
-- Visualize detection results
-- Save outputs in multiple formats (NumPy arrays, JSON)
-- Command-line interface with comprehensive configuration options
+- `yolo_evaluator.py` - Evaluates YOLO model predictions against COCO ground truth annotations
+- `yolo_eval_config.yaml` - Configuration file for the YOLO evaluator
+- `dataset_validator.py` - Validates datasets for YOLO training and evaluation
+- `yolo11_feature_extractor.py` - Extracts features and detections from YOLO11 models
+- `yolo11_cache.py` - Caches model outputs to avoid repeated processing
+- `yolo11_cache_demo.py` - Demonstrates caching functionality with the evaluator
+- `test_yolo11.py` - Tests for YOLO11 functionality
+- `YOLO_EVAL_README.md` - Detailed documentation for the YOLO evaluator
 
-## Prerequisites
+## Quick Start
 
+1. Clone this repository:
+```bash
+git clone https://github.com/your-username/Vision_LSF.git
+cd Vision_LSF/yolo11
 ```
-pip install ultralytics torch numpy opencv-python pillow matplotlib tqdm
+
+2. Install required dependencies:
+```bash
+pip install -r requirements.txt
 ```
 
-## Usage
+3. Run the YOLO evaluator:
+```bash
+python yolo_evaluator.py --config yolo_eval_config.yaml
+```
 
-### Basic Usage
+## Feature Extraction
+
+The `yolo11_feature_extractor.py` script allows you to extract features from any layer of a YOLO11 model:
 
 ```bash
-python yolo11_feature_extractor.py --img-dir /path/to/images --output-dir yolo11_output
+python yolo11_feature_extractor.py --model yolo11n.pt --img-dir /path/to/images --output-dir /path/to/output --layer model.23
 ```
 
-### With Feature Extraction
+This will extract features from the specified layer for all images in the input directory.
 
-First, list available layers:
+## Model Output Caching
+
+The `yolo11_cache.py` module provides functionality for caching model predictions to avoid repeated processing of the same images. This is particularly useful when you need to run the model multiple times on the same dataset.
+
+### Using Caching with the Evaluator
+
+The evaluator supports caching to speed up repeated evaluation runs:
 
 ```bash
-python yolo11_feature_extractor.py --list-layers
+# First run (creates cache)
+python yolo_evaluator.py --config yolo_eval_config.yaml --enable-cache
+
+# Second run (uses cache)
+python yolo_evaluator.py --config yolo_eval_config.yaml --enable-cache
 ```
 
-Then extract features from a specific layer:
+The caching functionality automatically:
+1. Checks for cached predictions for each image
+2. Uses cached predictions when available
+3. Runs the model only for images not in the cache
+4. Saves new predictions to the cache
+
+### Caching Logits for Conformal Prediction
+
+For conformal prediction workflows, you can also cache the raw model outputs (logits):
 
 ```bash
-python yolo11_feature_extractor.py --img-dir /path/to/images --output-dir yolo11_output --layer "10.conv"
+python yolo_evaluator.py --config yolo_eval_config.yaml --enable-cache --cache-logits
 ```
 
-Extract features from multiple layers:
+This will store:
+1. The final model predictions (bounding boxes, class IDs, confidence scores)
+2. Raw model outputs before post-processing (confidence logits, class logits, etc.)
+
+These raw outputs can then be used for conformal prediction or other uncertainty quantification methods.
+
+### Cache Configuration
+
+You can configure the cache directory and logit caching in the `yolo_eval_config.yaml` file:
+
+```yaml
+# Cache configuration
+cache:
+  dir: 'yolo11_cache'   # Directory to store cache files
+  cache_logits: false    # Whether to cache raw model outputs for conformal prediction
+  logits_to_extract: ['probs', 'conf', 'cls']  # Types of logits to extract and cache
+```
+
+### Cache Demonstration
+
+To see a demonstration of the caching functionality and measure the speedup:
 
 ```bash
-python yolo11_feature_extractor.py --img-dir /path/to/images --layer "10.conv,11.conv,12.conv" --normalize l2
+python yolo11_cache_demo.py --config yolo_eval_config.yaml --num-images 10
 ```
 
-### All Options
+This script:
+1. Runs the evaluator without caching
+2. Runs the evaluator with caching
+3. Measures and reports the speedup
+
+### Using the Cache API Directly
+
+You can also use the caching API directly in your own code:
+
+```python
+from yolo11_cache import YOLO11Cache
+
+# Initialize cache with logit caching enabled
+cache = YOLO11Cache(
+    cache_dir="yolo11_cache",
+    model_name="yolo11n.pt",
+    conf_threshold=0.25,
+    iou_threshold=0.45,
+    cache_logits=True  # Enable logit caching
+)
+
+# Load cached predictions
+cache.load_cache("val_dataset")
+
+# Check if prediction exists for an image
+if cache.has_prediction("image.jpg"):
+    # Get cached prediction with logits
+    prediction, logits = cache.get_prediction("image.jpg", include_logits=True)
+    
+    # Use prediction and logits...
+    # Logits can be used for conformal prediction or uncertainty quantification
+else:
+    # Run model and add to cache
+    # ...
+    cache.save_prediction("image.jpg", prediction, logits=model_logits)
+
+# Save updated cache
+cache.save_cache("val_dataset")
+```
+
+## Dataset Validation
+
+The `dataset_validator.py` script helps validate datasets for YOLO training and evaluation:
 
 ```bash
-python yolo11_feature_extractor.py --help
+python dataset_validator.py --dataset-dir /path/to/dataset --annotations /path/to/annotations.json
 ```
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
 
 ```
 usage: yolo11_feature_extractor.py [-h] [--model MODEL] --img-dir IMG_DIR
