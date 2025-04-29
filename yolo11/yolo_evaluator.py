@@ -874,6 +874,71 @@ class COCOEvaluator:
             }
         }
     
+    def split_for_calibration(self, image_files, coco_data):
+        """
+        Split validation data into validation and calibration sets,
+        ensuring class balance between the two sets.
+        
+        Args:
+            image_files: List of (filename, path) tuples for validation images
+            coco_data: COCO annotations data
+            
+        Returns:
+            Tuple of (validation_files, calibration_files)
+        """
+        print("Splitting validation data into validation and calibration sets...")
+        
+        # Use a different approach to get a more balanced split
+        # Sort all images by their class distributions
+        images_with_classes = []
+        
+        # Process each image to get its class distribution
+        for img_file, img_path in image_files:
+            # Get ground truth for this image
+            ground_truth, _ = self.get_image_ground_truth(img_file, coco_data)
+            
+            if not ground_truth:
+                continue
+                
+            # Get class counts for this image
+            class_ids = [gt['category_id'] for gt in ground_truth]
+            
+            # Add to our list with class information
+            images_with_classes.append((img_file, img_path, class_ids))
+        
+        # Shuffle the images first to randomize
+        import random
+        random.shuffle(images_with_classes)
+        
+        # Sort images by number of classes first (to interleave simple and complex images)
+        images_with_classes.sort(key=lambda x: len(x[2]))
+        
+        # Split into two groups ensuring even distribution
+        val_files = []
+        cal_files = []
+        
+        # Use alternating assignment to split evenly
+        for i, (img_file, img_path, _) in enumerate(images_with_classes):
+            if i % 2 == 0:
+                val_files.append((img_file, img_path))
+            else:
+                cal_files.append((img_file, img_path))
+        
+        # Double-check we have close to 50-50 split
+        total = len(val_files) + len(cal_files)
+        val_pct = len(val_files) / total * 100 if total > 0 else 0
+        cal_pct = len(cal_files) / total * 100 if total > 0 else 0
+        
+        print(f"Split completed: {len(val_files)} images ({val_pct:.1f}%) for validation, "
+              f"{len(cal_files)} images ({cal_pct:.1f}%) for calibration")
+        
+        # If the split is very unbalanced (more than 60-40), warn the user
+        if abs(len(val_files) - len(cal_files)) > 0.2 * total:
+            print("WARNING: The validation/calibration split is not well balanced. "
+                  "This may affect model evaluation and calibration.")
+        
+        return val_files, cal_files
+
     def run_evaluation(self):
         """Run the evaluation process."""
         # Load model
@@ -883,17 +948,6 @@ class COCOEvaluator:
         is_train = self.dataset_split.lower() == 'train'
         dataset_name = "training" if is_train else "validation"
         print(f"\nEvaluating on {dataset_name} dataset")
-        
-        # Try to load cache if enabled
-        if self.enable_cache and self.cache:
-            cache_loaded = self.cache.load_cache(dataset_name)
-            if cache_loaded:
-                print(f"Loaded prediction cache for {dataset_name} dataset")
-                print(f"Cache contains {len(self.cache.prediction_cache)} predictions")
-                if self.cache_logits and hasattr(self.cache, 'logits_cache') and self.cache.logits_cache:
-                    print(f"Cache contains logits for {len(self.cache.logits_cache)} images")
-            else:
-                print(f"No existing cache found for {dataset_name} dataset, will create new cache")
         
         # Load annotations for the selected dataset
         self.coco_gt_data, self.categories = self.load_coco_annotations(is_train=is_train)
@@ -929,8 +983,48 @@ class COCOEvaluator:
         if self.max_images is not None and len(image_files) > self.max_images:
             print(f"Limiting evaluation to {self.max_images} images (out of {len(image_files)} total)")
             image_files = image_files[:self.max_images]
+            
+        # For validation dataset, create a split for calibration set if caching is enabled
+        if self.enable_cache and not is_train:
+            # Split validation data into validation and calibration
+            val_files, cal_files = self.split_for_calibration(image_files, self.coco_gt_data)
+            
+            # Process validation set
+            print(f"\nProcessing validation set ({len(val_files)} images)...")
+            self._process_image_set(val_files, "validation")
+            
+            # Process calibration set
+            print(f"\nProcessing calibration set ({len(cal_files)} images)...")
+            self._process_image_set(cal_files, "calibration")
+            
+            # Return combined metrics (average of both sets)
+            return None
+        else:
+            # Regular processing for training set or when caching is disabled
+            print(f"Evaluating {len(image_files)} images...")
+            return self._process_image_set(image_files, dataset_name)
+            
+    def _process_image_set(self, image_files, dataset_name):
+        """
+        Process a set of images and store results.
         
-        print(f"Evaluating {len(image_files)} images...")
+        Args:
+            image_files: List of (filename, path) tuples for images
+            dataset_name: Name of the dataset (e.g., "training", "validation", "calibration")
+        
+        Returns:
+            Overall metrics for the processed images
+        """
+        # Try to load cache if enabled
+        if self.enable_cache and self.cache:
+            cache_loaded = self.cache.load_cache(dataset_name)
+            if cache_loaded:
+                print(f"Loaded prediction cache for {dataset_name} dataset")
+                print(f"Cache contains {len(self.cache.prediction_cache)} predictions")
+                if self.cache_logits and hasattr(self.cache, 'logits_cache') and self.cache.logits_cache:
+                    print(f"Cache contains logits for {len(self.cache.logits_cache)} images")
+            else:
+                print(f"No existing cache found for {dataset_name} dataset, will create new cache")
         
         # Initialize overall results
         all_true_positives = []
@@ -941,7 +1035,7 @@ class COCOEvaluator:
         consolidated_ground_truth = {}
         
         # Evaluate each image
-        for img_file, img_path in tqdm(image_files, desc="Evaluating images"):
+        for img_file, img_path in tqdm(image_files, desc=f"Evaluating {dataset_name} images"):
             # Get ground truth for this image
             ground_truth, image_size = self.get_image_ground_truth(img_file, self.coco_gt_data)
             
@@ -968,7 +1062,7 @@ class COCOEvaluator:
         overall_metrics = self.calculate_metrics(all_true_positives, all_false_positives, all_false_negatives)
         
         # Print summary
-        print("\n===== Evaluation Results =====")
+        print(f"\n===== {dataset_name.title()} Evaluation Results =====")
         print(f"Total images evaluated: {len(image_files)}")
         print(f"True positives: {overall_metrics['overall']['true_positives']}")
         print(f"False positives: {overall_metrics['overall']['false_positives']}")
@@ -980,20 +1074,22 @@ class COCOEvaluator:
         
         # Print mAP metrics
         map_metrics = overall_metrics['overall']['map_metrics']
-        print("\n===== mAP Metrics =====")
+        print(f"\n===== {dataset_name.title()} mAP Metrics =====")
         print(f"mAP@50: {map_metrics['map50']:.4f}")
         print(f"mAP@75: {map_metrics['map75']:.4f}")
         print(f"mAP@50-95: {map_metrics['map50-95']:.4f}")
         
         # Print per-class metrics
-        print("\n===== Per-Class Results =====")
+        print(f"\n===== {dataset_name.title()} Per-Class Results =====")
         sorted_classes = sorted(overall_metrics['per_class'].items(), key=lambda x: x[1]['f1'], reverse=True)
         for class_name, metrics in sorted_classes:
             print(f"{class_name}: Precision: {metrics['precision']:.4f}, Recall: {metrics['recall']:.4f}, F1: {metrics['f1']:.4f}")
         
         # Save metrics to CSV if enabled
         if self.config['metrics']['save_csv']:
-            self.save_metrics_to_csv(overall_metrics, self.metrics_dir)
+            metrics_dir = os.path.join(self.metrics_dir, dataset_name)
+            os.makedirs(metrics_dir, exist_ok=True)
+            self.save_metrics_to_csv(overall_metrics, metrics_dir)
         
         # Save cache if enabled and modified
         if self.enable_cache and self.cache and hasattr(self.cache, 'cache_modified') and self.cache.cache_modified:
@@ -1010,10 +1106,8 @@ class COCOEvaluator:
             if self.cache_logits and hasattr(self.cache, 'logits_cache') and self.cache.logits_cache:
                 print(f"Saved logits for {len(self.cache.logits_cache)} images")
         
-        print(f"\nResults saved to {self.output_dir}")
-        
         return overall_metrics
-        
+    
     def _get_cache_path(self, dataset_name: str) -> str:
         """Get the path to the cache directory for a specific dataset."""
         if self.cache:

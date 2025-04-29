@@ -28,7 +28,7 @@ cache:
 # Evaluation parameters
 evaluation:
   # Dataset split to use ('train' or 'val')
-  dataset_split: "val"
+  dataset_split: "train"
   
   # IoU threshold for matching predictions with ground truth
   match_iou_threshold: 0.5
