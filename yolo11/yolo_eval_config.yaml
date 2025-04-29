@@ -28,7 +28,7 @@ cache:
 # Evaluation parameters
 evaluation:
   # Dataset split to use ('train' or 'val')
-  dataset_split: "train"
+  dataset_split: "val"
   
   # IoU threshold for matching predictions with ground truth
   match_iou_threshold: 0.5
@@ -37,7 +37,7 @@ evaluation:
   eval_full_dataset: true
   
   # Maximum number of images to evaluate (null for all, or specify a number for limit)
-  max_images: 100
+  max_images: null
   
   # Specific image filenames to evaluate (if eval_full_dataset is false)
   specific_images:
@@ -48,7 +48,7 @@ evaluation:
     - "000000000776.jpg"
   
   # Class mapping file (if needed to map between different class schemes)
-  class_mapping_file: null
+  class_mapping_file: 1000
 
 # Visualization settings
 visualization:

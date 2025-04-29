@@ -86,13 +86,19 @@ class YOLO11Cache:
         Returns:
             Path to cache directory
         """
-        # For validation, don't use cache_id to simplify paths
-        if dataset_name.lower() in ["validation", "val"]:
-            cache_path = os.path.join(self.cache_dir, "validation")
-        elif dataset_name.lower() in ["calibration", "cal"]:
-            cache_path = os.path.join(self.cache_dir, "calibration")
+        # For validation, calibration and training, don't use cache_id to simplify paths
+        dataset_name_lower = dataset_name.lower()
+        if any(name in dataset_name_lower for name in ["validation", "val", "training", "train", "calibration", "cal"]):
+            # Extract the base dataset type (validation, training, calibration)
+            if "validation" in dataset_name_lower or "val" in dataset_name_lower:
+                base_name = "validation"
+            elif "training" in dataset_name_lower or "train" in dataset_name_lower:
+                base_name = "training"
+            elif "calibration" in dataset_name_lower or "cal" in dataset_name_lower:
+                base_name = "calibration"
+            cache_path = os.path.join(self.cache_dir, base_name)
         else:
-            # For training and other datasets, still use cache_id for potential multiple configurations
+            # For other datasets, still use cache_id for potential multiple configurations
             cache_path = os.path.join(self.cache_dir, f"{dataset_name}_{self.cache_id}")
         
         return cache_path

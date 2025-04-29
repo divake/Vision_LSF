@@ -1048,6 +1048,10 @@ class COCOEvaluator:
             
             if not ground_truth:
                 print(f"Warning: No ground truth annotations found for {img_file}")
+                # Still evaluate the image to get predictions and logits, but with empty ground truth
+                # This ensures we save logits for all images, even those without annotations
+                result = self.evaluate_image(img_path, [], image_size)
+                # Skip adding to metrics since there are no ground truth objects
                 continue
             
             # Evaluate the image
