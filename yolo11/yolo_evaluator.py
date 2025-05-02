@@ -877,7 +877,7 @@ class COCOEvaluator:
     def split_for_calibration(self, image_files, coco_data):
         """
         Split validation data into validation and calibration sets,
-        ensuring class balance between the two sets.
+        ensuring class balance between the two sets and no overlap.
         
         Args:
             image_files: List of (filename, path) tuples for validation images
@@ -888,16 +888,22 @@ class COCOEvaluator:
         """
         print("Splitting validation data into validation and calibration sets...")
         
-        # Use a different approach to get a more balanced split
-        # Sort all images by their class distributions
-        images_with_classes = []
+        # Create a set of all image filenames to track processed images
+        all_image_filenames = set(img_file for img_file, _ in image_files)
+        print(f"Total images in dataset: {len(all_image_filenames)}")
         
         # Process each image to get its class distribution
-        for img_file, img_path in image_files:
+        images_with_classes = []
+        images_without_annotations = []
+        
+        # Add a progress bar to visualize progress
+        for img_file, img_path in tqdm(image_files, desc="Processing validation images for splitting"):
             # Get ground truth for this image
             ground_truth, _ = self.get_image_ground_truth(img_file, coco_data)
             
             if not ground_truth:
+                # Keep track of images without annotations separately
+                images_without_annotations.append((img_file, img_path))
                 continue
                 
             # Get class counts for this image
@@ -906,23 +912,59 @@ class COCOEvaluator:
             # Add to our list with class information
             images_with_classes.append((img_file, img_path, class_ids))
         
-        # Shuffle the images first to randomize
-        import random
-        random.shuffle(images_with_classes)
+        print(f"Found {len(images_with_classes)} images with valid annotations")
+        print(f"Found {len(images_without_annotations)} images without annotations (will be ignored)")
         
-        # Sort images by number of classes first (to interleave simple and complex images)
-        images_with_classes.sort(key=lambda x: len(x[2]))
+        # If no images with classes found, create empty splits
+        if not images_with_classes:
+            print("WARNING: No images with annotations found for split!")
+            return [], []
         
-        # Split into two groups ensuring even distribution
-        val_files = []
-        cal_files = []
+        # Create a dictionary to count images per class
+        class_counts = {}
+        for _, _, class_ids in images_with_classes:
+            for class_id in set(class_ids):  # Use set to count each class only once per image
+                class_counts[class_id] = class_counts.get(class_id, 0) + 1
         
-        # Use alternating assignment to split evenly
-        for i, (img_file, img_path, _) in enumerate(images_with_classes):
-            if i % 2 == 0:
-                val_files.append((img_file, img_path))
+        # Sort class IDs by frequency (less common classes first)
+        sorted_classes = sorted(class_counts.items(), key=lambda x: x[1])
+        print(f"Found {len(sorted_classes)} unique classes in the dataset")
+        
+        # Create sets to track images in each split
+        val_set = set()
+        cal_set = set()
+        
+        # Initialize counters for class distribution
+        val_class_counts = {cls_id: 0 for cls_id, _ in sorted_classes}
+        cal_class_counts = {cls_id: 0 for cls_id, _ in sorted_classes}
+        
+        # Sort images by number of classes first (to handle complex images first)
+        # This ensures multi-class images are evenly distributed
+        images_with_classes.sort(key=lambda x: len(set(x[2])), reverse=True)
+        
+        # For each image, assign to the split with fewer instances of its rarest class
+        for img_file, img_path, class_ids in images_with_classes:
+            # Skip if already assigned (shouldn't happen, but safe check)
+            if img_file in val_set or img_file in cal_set:
+                continue
+                
+            # Find the rarest class in this image
+            unique_classes = set(class_ids)
+            rarest_class = min(unique_classes, key=lambda c: class_counts.get(c, 0))
+            
+            # Decide which split to add to based on class balance
+            if val_class_counts.get(rarest_class, 0) <= cal_class_counts.get(rarest_class, 0):
+                val_set.add(img_file)
+                for cls in unique_classes:
+                    val_class_counts[cls] = val_class_counts.get(cls, 0) + 1
             else:
-                cal_files.append((img_file, img_path))
+                cal_set.add(img_file)
+                for cls in unique_classes:
+                    cal_class_counts[cls] = cal_class_counts.get(cls, 0) + 1
+        
+        # Create the final lists of files
+        val_files = [(img_file, img_path) for img_file, img_path in image_files if img_file in val_set]
+        cal_files = [(img_file, img_path) for img_file, img_path in image_files if img_file in cal_set]
         
         # Double-check we have close to 50-50 split
         total = len(val_files) + len(cal_files)
@@ -931,6 +973,31 @@ class COCOEvaluator:
         
         print(f"Split completed: {len(val_files)} images ({val_pct:.1f}%) for validation, "
               f"{len(cal_files)} images ({cal_pct:.1f}%) for calibration")
+        
+        # Verify they are non-overlapping
+        overlap = set(f[0] for f in val_files).intersection(set(f[0] for f in cal_files))
+        if overlap:
+            print(f"ERROR: Found {len(overlap)} overlapping images between validation and calibration sets!")
+        else:
+            print("Verified: Validation and calibration sets are completely non-overlapping")
+        
+        # Check class balance
+        print("Class balance between validation and calibration sets:")
+        imbalanced_classes = 0
+        for cls_id in val_class_counts:
+            val_count = val_class_counts.get(cls_id, 0)
+            cal_count = cal_class_counts.get(cls_id, 0)
+            total_count = val_count + cal_count
+            if total_count > 0:
+                balance = abs(val_count - cal_count) / total_count
+                if balance > 0.2:  # More than 20% imbalance
+                    imbalanced_classes += 1
+                    print(f"  Class {cls_id}: Imbalanced - Val: {val_count}, Cal: {cal_count}, Ratio: {balance:.2f}")
+        
+        if imbalanced_classes == 0:
+            print("  All classes are well-balanced between validation and calibration")
+        else:
+            print(f"  Found {imbalanced_classes} imbalanced classes out of {len(val_class_counts)}")
         
         # If the split is very unbalanced (more than 60-40), warn the user
         if abs(len(val_files) - len(cal_files)) > 0.2 * total:
@@ -986,16 +1053,57 @@ class COCOEvaluator:
             
         # For validation dataset, create a split for calibration set if caching is enabled
         if self.enable_cache and not is_train:
+            import time
+            
+            start_time = time.time()
             # Split validation data into validation and calibration
             val_files, cal_files = self.split_for_calibration(image_files, self.coco_gt_data)
+            split_time = time.time() - start_time
+            print(f"Split time: {split_time:.2f} seconds")
             
-            # Process validation set
+            if not val_files or not cal_files:
+                print("Error: Failed to create validation/calibration split. Using all files for validation.")
+                # Process all files as validation
+                print(f"\nProcessing all {len(image_files)} images as validation...")
+                return self._process_image_set(image_files, "validation")
+            
+            # Save the original cache
+            original_cache = self.cache
+            
+            # Process validation set with its own cache
             print(f"\nProcessing validation set ({len(val_files)} images)...")
-            self._process_image_set(val_files, "validation")
+            cache_dir = self.config.get('cache', {}).get('dir', 'yolo11_cache')
+            self.cache = YOLO11Cache(
+                cache_dir=cache_dir,
+                model_name=self.model_name,
+                conf_threshold=self.conf_threshold,
+                iou_threshold=self.iou_threshold,
+                cache_logits=self.cache_logits
+            )
+            val_start = time.time()
+            val_metrics = self._process_image_set(val_files, "validation")
+            val_time = time.time() - val_start
+            print(f"Validation processing time: {val_time:.2f} seconds")
             
-            # Process calibration set
+            # Process calibration set with a new cache
             print(f"\nProcessing calibration set ({len(cal_files)} images)...")
-            self._process_image_set(cal_files, "calibration")
+            self.cache = YOLO11Cache(
+                cache_dir=cache_dir,
+                model_name=self.model_name,
+                conf_threshold=self.conf_threshold,
+                iou_threshold=self.iou_threshold,
+                cache_logits=self.cache_logits
+            )
+            cal_start = time.time()
+            cal_metrics = self._process_image_set(cal_files, "calibration")
+            cal_time = time.time() - cal_start
+            print(f"Calibration processing time: {cal_time:.2f} seconds")
+            
+            # Restore the original cache
+            self.cache = original_cache
+            
+            total_time = time.time() - start_time
+            print(f"\nTotal evaluation time: {total_time:.2f} seconds")
             
             # Return combined metrics (average of both sets)
             return None
